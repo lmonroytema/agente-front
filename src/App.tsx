@@ -831,7 +831,45 @@ function App() {
   };
 
   const handleActivationCodeRequest = async () => {
-    await requestCorporateLogin("activate_2fa");
+    if (!pendingLogin?.challenge_id) {
+      await requestCorporateLogin("activate_2fa");
+      return;
+    }
+
+    setTwoFactorError(null);
+    setLoginMessage(null);
+    setTwoFactorLoading(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/resend-2fa`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          challenge_id: pendingLogin.challenge_id,
+        }),
+      });
+      const payload = await parseJsonResponse<LoginResponse & ApiErrorPayload>(response);
+      if (!response.ok) {
+        throw new Error(getErrorMessage(payload, "No fue posible reenviar el codigo."));
+      }
+      if (!payload) {
+        throw new Error("La API no devolvió datos para el reenvío del código.");
+      }
+      setPendingLogin((current) =>
+        current
+          ? {
+              ...current,
+              challenge_id: payload.challenge_id ?? current.challenge_id,
+              masked_destination: payload.masked_destination ?? current.masked_destination,
+            }
+          : current,
+      );
+      setLoginMessage("Se envio un nuevo codigo a tu correo corporativo.");
+    } catch (resendError) {
+      setTwoFactorError(resendError instanceof Error ? resendError.message : "Error al reenviar el codigo.");
+    } finally {
+      setTwoFactorLoading(false);
+    }
   };
 
   const handleTwoFactor = async (event: FormEvent) => {
@@ -1199,7 +1237,7 @@ function App() {
                       ¿Has olvidado tu contraseña?
                     </button>
                     <button className="login-text-link" onClick={() => void handleActivationCodeRequest()} type="button">
-                      Código de activación
+                      Enviar codigo 2FA
                     </button>
                   </div>
 
@@ -1216,8 +1254,8 @@ function App() {
                   <div className="login-card-header">
                     <h2>Doble autenticación</h2>
                     <p>
-                      Hemos enviado un código de verificación al correo {pendingLogin.masked_destination}.
-                      Para esta demo, el código es <strong>246810</strong>.
+                      Hemos enviado un codigo de verificacion al correo {pendingLogin.masked_destination}. Revisa tu
+                      bandeja de entrada y, si aplica, la carpeta de spam o correo no deseado.
                     </p>
                   </div>
                   <form className="login-form" onSubmit={handleTwoFactor}>
@@ -1235,7 +1273,7 @@ function App() {
                     </button>
                   </form>
                   <button className="login-text-link" onClick={() => void handleActivationCodeRequest()} type="button">
-                    Reenviar código
+                    Reenviar codigo 2FA
                   </button>
                   <button className="secondary-button" onClick={() => setPendingLogin(null)} type="button">
                     Volver al inicio de sesión
