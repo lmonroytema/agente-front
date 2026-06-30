@@ -80,6 +80,16 @@ type AdminUser = {
   role: string;
   active: boolean;
   two_factor_enabled: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type AdminUserDraft = {
+  name: string;
+  email: string;
+  role: string;
+  active: boolean;
+  two_factor_enabled: boolean;
 };
 
 type CorporateEndpoint = {
@@ -343,6 +353,43 @@ function createEndpointDraft(): CorporateEndpoint {
   };
 }
 
+function createAdminUserDraft(): AdminUserDraft {
+  return {
+    name: "",
+    email: "",
+    role: "analista",
+    active: true,
+    two_factor_enabled: true,
+  };
+}
+
+function getAdminRoleLabel(role: string): string {
+  return (
+    {
+      admin: "Administrador",
+      analista: "Analista",
+      operaciones: "Operaciones",
+      auditoria: "Auditoría",
+    }[role] ?? role
+  );
+}
+
+function formatDateTime(value?: string | null): string {
+  if (!value) {
+    return "Sin registro";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("es-PE", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(parsed);
+}
+
 function toSettingsDraft(settings: AdminAppSettings): AdminAppSettingsDraft {
   return {
     ...settings,
@@ -381,8 +428,13 @@ function App() {
   const [activeSection, setActiveSection] = useState<WorkspaceSection>("inicio");
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
-  const [adminForm, setAdminForm] = useState({ name: "", email: "", role: "analista" });
+  const [adminForm, setAdminForm] = useState<AdminUserDraft>(createAdminUserDraft());
+  const [editingAdminUserId, setEditingAdminUserId] = useState<string | null>(null);
+  const [adminUserSearch, setAdminUserSearch] = useState("");
+  const [adminRoleFilter, setAdminRoleFilter] = useState("todos");
+  const [adminStatusFilter, setAdminStatusFilter] = useState("todos");
   const [adminError, setAdminError] = useState<string | null>(null);
+  const [adminMessage, setAdminMessage] = useState<string | null>(null);
   const [appSettings, setAppSettings] = useState<AdminAppSettings | null>(null);
   const [appSettingsDraft, setAppSettingsDraft] = useState<AdminAppSettingsDraft | null>(null);
   const [appSettingsLoading, setAppSettingsLoading] = useState(false);
@@ -483,6 +535,7 @@ function App() {
       return;
     }
     setAdminUsers([]);
+    setAdminMessage(null);
     setAppSettings(null);
     setAppSettingsDraft(null);
     setAppSettingsError(null);
@@ -546,6 +599,40 @@ function App() {
       })),
     [capabilities],
   );
+  const adminRoleOptions = useMemo(
+    () => [
+      { value: "analista", label: "Analista" },
+      { value: "operaciones", label: "Operaciones" },
+      { value: "auditoria", label: "Auditoría" },
+      { value: "admin", label: "Administrador" },
+    ],
+    [],
+  );
+  const filteredAdminUsers = useMemo(() => {
+    const search = adminUserSearch.trim().toLowerCase();
+
+    return adminUsers.filter((user) => {
+      const matchesSearch =
+        search.length === 0 ||
+        user.name.toLowerCase().includes(search) ||
+        user.email.toLowerCase().includes(search) ||
+        getAdminRoleLabel(user.role).toLowerCase().includes(search);
+      const matchesRole = adminRoleFilter === "todos" || user.role === adminRoleFilter;
+      const matchesStatus =
+        adminStatusFilter === "todos" ||
+        (adminStatusFilter === "activos" && user.active) ||
+        (adminStatusFilter === "inactivos" && !user.active) ||
+        (adminStatusFilter === "2fa" && user.two_factor_enabled);
+
+      return matchesSearch && matchesRole && matchesStatus;
+    });
+  }, [adminRoleFilter, adminStatusFilter, adminUserSearch, adminUsers]);
+  const activeAdminUsers = useMemo(() => adminUsers.filter((user) => user.active).length, [adminUsers]);
+  const adminUsersWithTwoFactor = useMemo(
+    () => adminUsers.filter((user) => user.two_factor_enabled).length,
+    [adminUsers],
+  );
+  const adminAdministrators = useMemo(() => adminUsers.filter((user) => user.role === "admin").length, [adminUsers]);
 
   const submitPrompt = async (requestMessage: string, nextSection: WorkspaceSection = "operacion") => {
     const cleanMessage = requestMessage.trim();
@@ -785,6 +872,7 @@ function App() {
   const handleCreateUser = async (event: FormEvent) => {
     event.preventDefault();
     setAdminError(null);
+    setAdminMessage(null);
     try {
       const response = await fetch(`${API_BASE}/api/admin/users`, {
         method: "POST",
@@ -798,15 +886,73 @@ function App() {
       if (!payload) {
         throw new Error("La API no devolvió el usuario creado.");
       }
-      setAdminForm({ name: "", email: "", role: "analista" });
+      setAdminForm(createAdminUserDraft());
+      setEditingAdminUserId(null);
+      setAdminMessage("Usuario registrado correctamente.");
       await loadAdminUsers();
     } catch (createError) {
       setAdminError(createError instanceof Error ? createError.message : "Error al crear usuario.");
     }
   };
 
+  const handleAdminFormChange = (field: keyof AdminUserDraft, value: string | boolean) => {
+    setAdminForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const handleEditAdminUser = (user: AdminUser) => {
+    setEditingAdminUserId(user.id);
+    setAdminError(null);
+    setAdminMessage(`Editando a ${user.name}.`);
+    setAdminForm({
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      active: user.active,
+      two_factor_enabled: user.two_factor_enabled,
+    });
+  };
+
+  const handleCancelAdminEdit = () => {
+    setEditingAdminUserId(null);
+    setAdminMessage(null);
+    setAdminError(null);
+    setAdminForm(createAdminUserDraft());
+  };
+
+  const handleSaveAdminUser = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!editingAdminUserId) {
+      await handleCreateUser(event);
+      return;
+    }
+
+    setAdminError(null);
+    setAdminMessage(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/users/${editingAdminUserId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(adminForm),
+      });
+      const payload = await parseJsonResponse<AdminUser & ApiErrorPayload>(response);
+      if (!response.ok) {
+        throw new Error(getErrorMessage(payload, "No fue posible guardar el usuario."));
+      }
+      if (!payload) {
+        throw new Error("La API no devolvió el usuario actualizado.");
+      }
+      setAdminUsers((current) => current.map((item) => (item.id === payload.id ? payload : item)));
+      setAdminMessage("Usuario actualizado correctamente.");
+      setEditingAdminUserId(null);
+      setAdminForm(createAdminUserDraft());
+    } catch (updateError) {
+      setAdminError(updateError instanceof Error ? updateError.message : "Error al actualizar usuario.");
+    }
+  };
+
   const handleAdminToggle = async (user: AdminUser, field: "active" | "two_factor_enabled") => {
     setAdminError(null);
+    setAdminMessage(null);
     try {
       const response = await fetch(`${API_BASE}/api/admin/users/${user.id}`, {
         method: "PATCH",
@@ -821,8 +967,40 @@ function App() {
         throw new Error("La API no devolvió el usuario actualizado.");
       }
       setAdminUsers((current) => current.map((item) => (item.id === payload.id ? payload : item)));
+      setAdminMessage(
+        field === "active"
+          ? `Estado actualizado para ${payload.name}.`
+          : `Doble autenticación actualizada para ${payload.name}.`,
+      );
     } catch (toggleError) {
       setAdminError(toggleError instanceof Error ? toggleError.message : "Error al actualizar usuario.");
+    }
+  };
+
+  const handleDeleteAdminUser = async (user: AdminUser) => {
+    const confirmed = window.confirm(`¿Deseas eliminar el registro de ${user.name}?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setAdminError(null);
+    setAdminMessage(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/users/${user.id}`, {
+        method: "DELETE",
+      });
+      const payload = await parseJsonResponse<{ success?: boolean } & ApiErrorPayload>(response);
+      if (!response.ok) {
+        throw new Error(getErrorMessage(payload, "No fue posible eliminar el usuario."));
+      }
+      setAdminUsers((current) => current.filter((item) => item.id !== user.id));
+      if (editingAdminUserId === user.id) {
+        setEditingAdminUserId(null);
+        setAdminForm(createAdminUserDraft());
+      }
+      setAdminMessage(`Usuario ${user.name} eliminado correctamente.`);
+    } catch (deleteError) {
+      setAdminError(deleteError instanceof Error ? deleteError.message : "Error al eliminar usuario.");
     }
   };
 
@@ -2077,38 +2255,124 @@ function App() {
               <div className="panel-header">
                 <div>
                   <p className="eyebrow admin-eyebrow">Control de acceso</p>
-                  <h3>Panel de administración de usuarios</h3>
+                  <h3>Administración profesional de usuarios</h3>
                 </div>
-                <span className="badge ok">{adminUsers.length} usuarios</span>
+                <span className="badge ok">{filteredAdminUsers.length} visibles</span>
               </div>
 
-              <form className="admin-form" onSubmit={handleCreateUser}>
-                <input
-                  type="text"
-                  placeholder="Nombre completo"
-                  value={adminForm.name}
-                  onChange={(event) => setAdminForm((current) => ({ ...current, name: event.target.value }))}
-                />
-                <input
-                  type="email"
-                  placeholder="usuario@tema.com.pe"
-                  value={adminForm.email}
-                  onChange={(event) => setAdminForm((current) => ({ ...current, email: event.target.value }))}
-                />
-                <select
-                  value={adminForm.role}
-                  onChange={(event) => setAdminForm((current) => ({ ...current, role: event.target.value }))}
-                >
-                  <option value="analista">Analista</option>
-                  <option value="operaciones">Operaciones</option>
-                  <option value="auditoria">Auditoría</option>
-                  <option value="admin">Administrador</option>
-                </select>
-                <button className="primary-button" type="submit">
-                  Crear usuario
-                </button>
+              <div className="admin-overview-grid admin-overview-grid-users">
+                <article className="admin-overview-card">
+                  <strong>{adminUsers.length}</strong>
+                  <span>usuarios registrados</span>
+                </article>
+                <article className="admin-overview-card">
+                  <strong>{activeAdminUsers}</strong>
+                  <span>usuarios activos</span>
+                </article>
+                <article className="admin-overview-card">
+                  <strong>{adminUsersWithTwoFactor}</strong>
+                  <span>con doble autenticación</span>
+                </article>
+                <article className="admin-overview-card">
+                  <strong>{adminAdministrators}</strong>
+                  <span>administradores</span>
+                </article>
+              </div>
+
+              <form className="admin-form admin-form-professional" onSubmit={handleSaveAdminUser}>
+                <div className="admin-form-grid">
+                  <label>
+                    <span>Nombre completo</span>
+                    <input
+                      type="text"
+                      placeholder="Nombre completo"
+                      value={adminForm.name}
+                      onChange={(event) => handleAdminFormChange("name", event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>Correo corporativo</span>
+                    <input
+                      type="email"
+                      placeholder="usuario@tema.com.pe"
+                      value={adminForm.email}
+                      onChange={(event) => handleAdminFormChange("email", event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>Rol</span>
+                    <select value={adminForm.role} onChange={(event) => handleAdminFormChange("role", event.target.value)}>
+                      {adminRoleOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <div className="toggle-grid">
+                  <button
+                    className={adminForm.active ? "toggle-chip active" : "toggle-chip"}
+                    onClick={() => handleAdminFormChange("active", !adminForm.active)}
+                    type="button"
+                  >
+                    {adminForm.active ? "Usuario activo" : "Usuario inactivo"}
+                  </button>
+                  <button
+                    className={adminForm.two_factor_enabled ? "toggle-chip active" : "toggle-chip"}
+                    onClick={() => handleAdminFormChange("two_factor_enabled", !adminForm.two_factor_enabled)}
+                    type="button"
+                  >
+                    {adminForm.two_factor_enabled ? "2FA habilitado" : "2FA deshabilitado"}
+                  </button>
+                </div>
+
+                <div className="admin-form-actions">
+                  <button className="primary-button" type="submit">
+                    {editingAdminUserId ? "Guardar usuario" : "Registrar usuario"}
+                  </button>
+                  {editingAdminUserId && (
+                    <button className="secondary-button compact-button" onClick={handleCancelAdminEdit} type="button">
+                      Cancelar edición
+                    </button>
+                  )}
+                </div>
               </form>
 
+              <div className="admin-toolbar">
+                <label>
+                  <span>Buscar usuario</span>
+                  <input
+                    type="text"
+                    placeholder="Nombre, correo o rol"
+                    value={adminUserSearch}
+                    onChange={(event) => setAdminUserSearch(event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Filtrar por rol</span>
+                  <select value={adminRoleFilter} onChange={(event) => setAdminRoleFilter(event.target.value)}>
+                    <option value="todos">Todos los roles</option>
+                    {adminRoleOptions.map((option) => (
+                      <option key={`filter-${option.value}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Filtrar por estado</span>
+                  <select value={adminStatusFilter} onChange={(event) => setAdminStatusFilter(event.target.value)}>
+                    <option value="todos">Todos</option>
+                    <option value="activos">Activos</option>
+                    <option value="inactivos">Inactivos</option>
+                    <option value="2fa">2FA habilitado</option>
+                  </select>
+                </label>
+              </div>
+
+              {adminMessage && <div className="success-box">{adminMessage}</div>}
               {adminError && <div className="error-box">{adminError}</div>}
 
               <div className="admin-table">
@@ -2116,35 +2380,50 @@ function App() {
                   <span>Usuario</span>
                   <span>Rol</span>
                   <span>Estado</span>
-                  <span>2FA</span>
+                  <span>Acciones</span>
                 </div>
                 {adminLoading && <p className="muted">Cargando usuarios...</p>}
+                {!adminLoading && filteredAdminUsers.length === 0 && (
+                  <div className="admin-empty-state">
+                    <h4>No hay coincidencias</h4>
+                    <p>Ajusta la búsqueda o los filtros para localizar usuarios registrados.</p>
+                  </div>
+                )}
                 {!adminLoading &&
-                  adminUsers.map((user) => (
+                  filteredAdminUsers.map((user) => (
                     <div className="admin-row" key={user.id}>
                       <div>
                         <span className="admin-cell-label">Usuario</span>
                         <strong>{user.name}</strong>
                         <p>{user.email}</p>
+                        <p>Alta: {formatDateTime(user.created_at)} | Actualización: {formatDateTime(user.updated_at)}</p>
                       </div>
                       <div className="admin-row-meta">
                         <span className="admin-cell-label">Rol</span>
-                        <span>{user.role}</span>
+                        <span>{getAdminRoleLabel(user.role)}</span>
                       </div>
                       <div className="admin-row-meta">
                         <span className="admin-cell-label">Estado</span>
-                        <button className="table-action" onClick={() => handleAdminToggle(user, "active")} type="button">
-                          {user.active ? "Activo" : "Inactivo"}
-                        </button>
+                        <span>{user.active ? "Activo" : "Inactivo"}</span>
+                        <span>{user.two_factor_enabled ? "2FA habilitado" : "2FA deshabilitado"}</span>
                       </div>
-                      <div className="admin-row-meta">
-                        <span className="admin-cell-label">2FA</span>
+                      <div className="admin-row-meta admin-row-actions">
+                        <span className="admin-cell-label">Acciones</span>
+                        <button className="table-action" onClick={() => handleEditAdminUser(user)} type="button">
+                          Editar
+                        </button>
+                        <button className="table-action" onClick={() => handleAdminToggle(user, "active")} type="button">
+                          {user.active ? "Desactivar" : "Activar"}
+                        </button>
                         <button
                           className="table-action"
                           onClick={() => handleAdminToggle(user, "two_factor_enabled")}
                           type="button"
                         >
-                          {user.two_factor_enabled ? "Habilitado" : "Deshabilitado"}
+                          {user.two_factor_enabled ? "Deshabilitar 2FA" : "Habilitar 2FA"}
+                        </button>
+                        <button className="ghost-button compact-button" onClick={() => handleDeleteAdminUser(user)} type="button">
+                          Eliminar
                         </button>
                       </div>
                     </div>

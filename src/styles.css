@@ -725,7 +725,6 @@ button:hover {
 
 .admin-form {
   display: grid;
-  grid-template-columns: 1.2fr 1.2fr 0.8fr auto;
   gap: 12px;
   margin-bottom: 18px;
   padding: 16px;
@@ -734,10 +733,36 @@ button:hover {
   border: 1px solid rgba(145, 0, 41, 0.12);
 }
 
+.admin-form-professional {
+  gap: 16px;
+}
+
+.admin-form-grid,
+.admin-toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admin-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.admin-form-actions .secondary-button,
+.admin-row-actions .ghost-button {
+  width: auto;
+}
+
+.admin-overview-grid-users {
+  margin-bottom: 18px;
+}
+
 .admin-table-header,
 .admin-row {
   display: grid;
-  grid-template-columns: 1.8fr 0.8fr 0.8fr 0.9fr;
+  grid-template-columns: 1.8fr 0.8fr 0.9fr 1.3fr;
   gap: 12px;
   align-items: center;
 }
@@ -772,6 +797,26 @@ button:hover {
   min-width: 0;
 }
 
+.admin-row-actions {
+  align-items: stretch;
+}
+
+.admin-toolbar {
+  margin-bottom: 18px;
+}
+
+.admin-toolbar label,
+.admin-form-grid label {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-toolbar label span,
+.admin-form-grid label span {
+  color: var(--text-soft);
+  font-size: 0.86rem;
+}
+
 .admin-cell-label {
   display: none;
   font-size: 0.78rem;
@@ -788,6 +833,11 @@ button:hover {
   border-color: rgba(145, 0, 41, 0.16);
   background: linear-gradient(135deg, rgba(246, 226, 230, 0.92), rgba(253, 231, 222, 0.86));
   color: #512a35;
+}
+
+.admin-row-actions .table-action,
+.admin-row-actions .ghost-button {
+  width: 100%;
 }
 
 .settings-grid {
@@ -1138,6 +1188,8 @@ button:hover {
   .app-shell,
   .workspace-grid,
   .admin-form,
+  .admin-form-grid,
+  .admin-toolbar,
   .admin-overview-grid,
   .admin-table-header,
   .admin-row,
@@ -1329,6 +1381,12 @@ button:hover {
 
   .admin-row-meta .table-action {
     width: 100%;
+  }
+
+  .admin-form-actions,
+  .admin-row-actions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .toggle-grid {
