@@ -4,6 +4,7 @@ const API_BASE =
   import.meta.env.VITE_API_BASE_URL ??
   (window.location.port === "5173" ? "http://127.0.0.1:8000" : window.location.origin);
 const PORTADA_IMAGE = "/imagenes/portada.png";
+const LOGO_GM_IMAGE = "/imagenes/logo-gm.png";
 const LOGO_TEMA_IMAGE = "/imagenes/logo-tema.png";
 const MAX_UPLOAD_FILE_SIZE_MB = 1024;
 const MAX_UPLOAD_FILE_SIZE_BYTES = MAX_UPLOAD_FILE_SIZE_MB * 1024 * 1024;
@@ -159,6 +160,15 @@ type ApiErrorPayload = {
 };
 
 type WorkspaceSection = "inicio" | "operacion" | "modulos" | "archivos" | "admin";
+type AdminSectionTab = "settings" | "users";
+type AppSettingsSectionTab =
+  | "identity"
+  | "access"
+  | "governance"
+  | "ai"
+  | "microsoft"
+  | "infrastructure"
+  | "integrations";
 
 type PasswordResetContext = {
   reset_id: string;
@@ -191,6 +201,16 @@ const starterPrompts = [
   "Compara los resultados de agua cargados contra los umbrales ECA",
   "Genera un informe trimestral de monitoreo ambiental con los datos cargados",
   "Quita los folios del área inferior derecha desde la página 1 hasta la página 2",
+];
+
+const appSettingsSectionTabs: Array<{ id: AppSettingsSectionTab; label: string }> = [
+  { id: "identity", label: "Identidad" },
+  { id: "access", label: "Acceso" },
+  { id: "governance", label: "Gobierno de datos" },
+  { id: "ai", label: "IA y presupuesto" },
+  { id: "microsoft", label: "Microsoft 365" },
+  { id: "infrastructure", label: "Infraestructura" },
+  { id: "integrations", label: "Integraciones" },
 ];
 
 const sectionMeta: Array<{ id: WorkspaceSection; label: string; description: string }> = [
@@ -421,6 +441,53 @@ function appendPromptText(base: string, addition: string): string {
   return `${trimmedBase} ${trimmedAddition}`;
 }
 
+function validatePasswordPair(password: string, confirmation: string, required = true): string | null {
+  const normalizedPassword = password.trim();
+  const normalizedConfirmation = confirmation.trim();
+
+  if (!required && !normalizedPassword && !normalizedConfirmation) {
+    return null;
+  }
+
+  if (!normalizedPassword || !normalizedConfirmation) {
+    return required
+      ? "Debes ingresar y confirmar la contraseña."
+      : "Debes ingresar y confirmar la nueva contraseña.";
+  }
+
+  if (normalizedPassword !== normalizedConfirmation) {
+    return required ? "Las contraseñas no coinciden." : "Las nuevas contraseñas no coinciden.";
+  }
+
+  if (normalizedPassword.length < 8) {
+    return required
+      ? "La contraseña debe tener al menos 8 caracteres."
+      : "La nueva contraseña debe tener al menos 8 caracteres.";
+  }
+
+  return null;
+}
+
+function useAutoDismissMessage(
+  value: string | null,
+  setValue: (value: string | null) => void,
+  delayMs = 5000,
+): void {
+  useEffect(() => {
+    if (!value) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setValue(null);
+    }, delayMs);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [delayMs, setValue, value]);
+}
+
 function toSettingsDraft(settings: AdminAppSettings): AdminAppSettingsDraft {
   return {
     ...settings,
@@ -448,6 +515,8 @@ function App() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [showResetPasswordConfirmation, setShowResetPasswordConfirmation] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginMessage, setLoginMessage] = useState<string | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
@@ -463,9 +532,13 @@ function App() {
   const [pendingLogin, setPendingLogin] = useState<LoginResponse | null>(null);
   const [session, setSession] = useState<LoginResponse | null>(null);
   const [activeSection, setActiveSection] = useState<WorkspaceSection>("inicio");
+  const [activeAdminTab, setActiveAdminTab] = useState<AdminSectionTab>("users");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<AppSettingsSectionTab>("identity");
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminForm, setAdminForm] = useState<AdminUserDraft>(createAdminUserDraft());
+  const [showAdminPassword, setShowAdminPassword] = useState(false);
+  const [showAdminPasswordConfirmation, setShowAdminPasswordConfirmation] = useState(false);
   const [editingAdminUserId, setEditingAdminUserId] = useState<string | null>(null);
   const [adminUserSearch, setAdminUserSearch] = useState("");
   const [adminRoleFilter, setAdminRoleFilter] = useState("todos");
@@ -483,6 +556,18 @@ function App() {
   const [speechError, setSpeechError] = useState<string | null>(null);
   const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const speechPromptBaseRef = useRef("");
+
+  useAutoDismissMessage(error, setError);
+  useAutoDismissMessage(loginError, setLoginError);
+  useAutoDismissMessage(loginMessage, setLoginMessage);
+  useAutoDismissMessage(passwordResetError, setPasswordResetError);
+  useAutoDismissMessage(passwordResetMessage, setPasswordResetMessage);
+  useAutoDismissMessage(twoFactorError, setTwoFactorError);
+  useAutoDismissMessage(adminError, setAdminError);
+  useAutoDismissMessage(adminMessage, setAdminMessage);
+  useAutoDismissMessage(appSettingsError, setAppSettingsError);
+  useAutoDismissMessage(appSettingsMessage, setAppSettingsMessage);
+  useAutoDismissMessage(speechError, setSpeechError);
 
   const loadInitialData = async () => {
     const [configResponse, capabilitiesResponse, policyResponse] = await Promise.all([
@@ -1012,6 +1097,11 @@ function App() {
 
     setPasswordResetError(null);
     setPasswordResetMessage(null);
+    const validationError = validatePasswordPair(resetPassword, resetPasswordConfirmation);
+    if (validationError) {
+      setPasswordResetError(validationError);
+      return;
+    }
     setPasswordResetLoading(true);
 
     try {
@@ -1058,6 +1148,11 @@ function App() {
     event.preventDefault();
     setAdminError(null);
     setAdminMessage(null);
+    const validationError = validatePasswordPair(adminForm.password, adminForm.password_confirmation);
+    if (validationError) {
+      setAdminError(validationError);
+      return;
+    }
     try {
       const response = await fetch(`${API_BASE}/api/admin/users`, {
         method: "POST",
@@ -1088,6 +1183,8 @@ function App() {
     setEditingAdminUserId(user.id);
     setAdminError(null);
     setAdminMessage(`Editando a ${user.name}.`);
+    setShowAdminPassword(false);
+    setShowAdminPasswordConfirmation(false);
     setAdminForm({
       name: user.name,
       email: user.email,
@@ -1103,6 +1200,8 @@ function App() {
     setEditingAdminUserId(null);
     setAdminMessage(null);
     setAdminError(null);
+    setShowAdminPassword(false);
+    setShowAdminPasswordConfirmation(false);
     setAdminForm(createAdminUserDraft());
   };
 
@@ -1115,6 +1214,11 @@ function App() {
 
     setAdminError(null);
     setAdminMessage(null);
+    const validationError = validatePasswordPair(adminForm.password, adminForm.password_confirmation, false);
+    if (validationError) {
+      setAdminError(validationError);
+      return;
+    }
     try {
       const response = await fetch(`${API_BASE}/api/admin/users/${editingAdminUserId}`, {
         method: "PATCH",
@@ -1131,6 +1235,8 @@ function App() {
       setAdminUsers((current) => current.map((item) => (item.id === payload.id ? payload : item)));
       setAdminMessage("Usuario actualizado correctamente.");
       setEditingAdminUserId(null);
+      setShowAdminPassword(false);
+      setShowAdminPasswordConfirmation(false);
       setAdminForm(createAdminUserDraft());
     } catch (updateError) {
       setAdminError(updateError instanceof Error ? updateError.message : "Error al actualizar usuario.");
@@ -1350,23 +1456,41 @@ function App() {
                   <form className="login-form" onSubmit={handlePasswordReset}>
                     <label>
                       <span>Nueva contraseña</span>
-                      <input
-                        type="password"
-                        value={resetPassword}
-                        onChange={(event) => setResetPassword(event.target.value)}
-                        placeholder="Mínimo 8 caracteres"
-                        autoComplete="new-password"
-                      />
+                      <div className="login-password-field">
+                        <input
+                          type={showResetPassword ? "text" : "password"}
+                          value={resetPassword}
+                          onChange={(event) => setResetPassword(event.target.value)}
+                          placeholder="Mínimo 8 caracteres"
+                          autoComplete="new-password"
+                        />
+                        <button
+                          className="login-password-toggle"
+                          onClick={() => setShowResetPassword((current) => !current)}
+                          type="button"
+                        >
+                          {showResetPassword ? "Ocultar" : "Ver"}
+                        </button>
+                      </div>
                     </label>
                     <label>
                       <span>Confirmar nueva contraseña</span>
-                      <input
-                        type="password"
-                        value={resetPasswordConfirmation}
-                        onChange={(event) => setResetPasswordConfirmation(event.target.value)}
-                        placeholder="Repite la nueva contraseña"
-                        autoComplete="new-password"
-                      />
+                      <div className="login-password-field">
+                        <input
+                          type={showResetPasswordConfirmation ? "text" : "password"}
+                          value={resetPasswordConfirmation}
+                          onChange={(event) => setResetPasswordConfirmation(event.target.value)}
+                          placeholder="Repite la nueva contraseña"
+                          autoComplete="new-password"
+                        />
+                        <button
+                          className="login-password-toggle"
+                          onClick={() => setShowResetPasswordConfirmation((current) => !current)}
+                          type="button"
+                        >
+                          {showResetPasswordConfirmation ? "Ocultar" : "Ver"}
+                        </button>
+                      </div>
                     </label>
                     <button className="login-button" disabled={passwordResetLoading} type="submit">
                       {passwordResetLoading ? "Actualizando..." : "Restablecer contraseña"}
@@ -1492,7 +1616,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-card brand-card-strong">
-          <img alt="Tema Litoclean" className="sidebar-logo" src={LOGO_TEMA_IMAGE} />
+          <img alt="GM" className="sidebar-logo" src={LOGO_GM_IMAGE} />
           <p className="eyebrow eyebrow-light">Tema Litoclean</p>
           <h1>Centro corporativo</h1>
           <p>Aplicación interna modular para operaciones, productividad y gobierno del dato.</p>
@@ -2032,660 +2156,752 @@ function App() {
 
         {activeSection === "admin" && session.is_admin && (
           <section className="admin-layout admin-layout-themed">
-            <div className="panel admin-panel admin-panel-settings">
+            <div className="panel admin-panel admin-tabs-panel">
               <div className="panel-header">
                 <div>
-                  <p className="eyebrow admin-eyebrow">Gobierno corporativo</p>
-                  <h3>Configuración del App</h3>
+                  <p className="eyebrow admin-eyebrow">Administración</p>
+                  <h3>Gestión corporativa</h3>
                 </div>
-                <span className="badge ok">{enabledEndpoints} endpoints activos</span>
               </div>
-
-              {appSettingsLoading && <p className="muted">Cargando configuración corporativa...</p>}
-
-              {!appSettingsLoading && (
-                <div className="admin-overview-grid">
-                  <article className="admin-overview-card">
-                    <strong>{config?.items.length ?? 0}</strong>
-                    <span>bloques de configuración</span>
-                  </article>
-                  <article className="admin-overview-card">
-                    <strong>{editableConfigBlocks.length}</strong>
-                    <span>áreas editables</span>
-                  </article>
-                  <article className="admin-overview-card">
-                    <strong>{policy?.allowed_domains.length ?? 0}</strong>
-                    <span>dominios corporativos</span>
-                  </article>
-                  <article className="admin-overview-card">
-                    <strong>{enabledEndpoints}</strong>
-                    <span>endpoints activos</span>
-                  </article>
-                </div>
-              )}
-
-              {appSettingsError && <div className="error-box">{appSettingsError}</div>}
-
-              {!appSettingsLoading && !appSettingsDraft && (
-                <div className="admin-empty-state">
-                  <h4>No se pudo mostrar la configuración avanzada</h4>
-                  <p>
-                    El backend sí tiene soporte para la configuración del App, pero esta pantalla no pudo
-                    cargarlo en este momento. Puedes reintentar la lectura sin salir de la sesión.
-                  </p>
-                  <div className="admin-inline-actions">
-                    <button className="primary-button" onClick={() => void loadAdminAppSettings()} type="button">
-                      Reintentar carga
-                    </button>
-                  </div>
-                  <div className="admin-summary-list">
-                    {editableConfigBlocks.map((block) => (
-                      <span className="file-pill" key={block}>
-                        {block}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {!appSettingsLoading && appSettingsDraft && (
-                <form className="settings-form" onSubmit={handleSaveAppSettings}>
-                  <div className="settings-grid">
-                    <section className="settings-section">
-                      <h4>Identidad y despliegue</h4>
-                      <label>
-                        <span>Nombre del App</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.app_name}
-                          onChange={(event) => handleDraftFieldChange("app_name", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Empresa</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.company_name}
-                          onChange={(event) => handleDraftFieldChange("company_name", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Industria</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.company_industry}
-                          onChange={(event) => handleDraftFieldChange("company_industry", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Superficie preferida</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.preferred_surface}
-                          onChange={(event) => handleDraftFieldChange("preferred_surface", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Despliegue</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.deployment_target}
-                          onChange={(event) => handleDraftFieldChange("deployment_target", event.target.value)}
-                        />
-                      </label>
-                    </section>
-
-                    <section className="settings-section">
-                      <h4>Acceso corporativo</h4>
-                      <label>
-                        <span>Proveedor de identidad</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.corporate_identity_provider}
-                          onChange={(event) =>
-                            handleDraftFieldChange("corporate_identity_provider", event.target.value)
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>Dominios permitidos</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.allowed_domains_text}
-                          onChange={(event) => handleDraftFieldChange("allowed_domains_text", event.target.value)}
-                          placeholder="tema.com.pe, tema.es"
-                        />
-                      </label>
-                      <label>
-                        <span>Correos administradores</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.admin_user_emails_text}
-                          onChange={(event) => handleDraftFieldChange("admin_user_emails_text", event.target.value)}
-                          placeholder="admin@tema.com.pe, seguridad@tema.es"
-                        />
-                      </label>
-                      <div className="toggle-grid">
-                        <button
-                          className={appSettingsDraft.require_corporate_email ? "toggle-chip active" : "toggle-chip"}
-                          onClick={() =>
-                            handleDraftFieldChange("require_corporate_email", !appSettingsDraft.require_corporate_email)
-                          }
-                          type="button"
-                        >
-                          Correo corporativo
-                        </button>
-                        <button
-                          className={appSettingsDraft.require_two_factor ? "toggle-chip active" : "toggle-chip"}
-                          onClick={() => handleDraftFieldChange("require_two_factor", !appSettingsDraft.require_two_factor)}
-                          type="button"
-                        >
-                          Doble autenticación
-                        </button>
-                      </div>
-                    </section>
-
-                    <section className="settings-section">
-                      <h4>Gobierno de datos</h4>
-                      <label>
-                        <span>Restricciones de datos</span>
-                        <textarea
-                          value={appSettingsDraft.data_restrictions ?? ""}
-                          onChange={(event) => handleDraftFieldChange("data_restrictions", event.target.value)}
-                          rows={3}
-                        />
-                      </label>
-                      <label>
-                        <span>Política PII</span>
-                        <textarea
-                          value={appSettingsDraft.pii_policy ?? ""}
-                          onChange={(event) => handleDraftFieldChange("pii_policy", event.target.value)}
-                          rows={3}
-                        />
-                      </label>
-                      <label>
-                        <span>Retención y auditoría</span>
-                        <textarea
-                          value={appSettingsDraft.retention_policy ?? ""}
-                          onChange={(event) => handleDraftFieldChange("retention_policy", event.target.value)}
-                          rows={3}
-                        />
-                      </label>
-                      <label>
-                        <span>Observabilidad</span>
-                        <textarea
-                          value={appSettingsDraft.observability_notes ?? ""}
-                          onChange={(event) => handleDraftFieldChange("observability_notes", event.target.value)}
-                          rows={3}
-                        />
-                      </label>
-                    </section>
-
-                    <section className="settings-section">
-                      <h4>IA generativa y presupuesto</h4>
-                      <label>
-                        <span>Proveedor aprobado</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.approved_gen_ai_provider ?? ""}
-                          onChange={(event) => handleDraftFieldChange("approved_gen_ai_provider", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Proveedor imagen</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.gen_image_api_provider ?? ""}
-                          onChange={(event) => handleDraftFieldChange("gen_image_api_provider", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Proveedor video</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.gen_video_api_provider ?? ""}
-                          onChange={(event) => handleDraftFieldChange("gen_video_api_provider", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Presupuesto mensual</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.gen_api_budget_monthly ?? ""}
-                          onChange={(event) => handleDraftFieldChange("gen_api_budget_monthly", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Umbral de alerta</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.gen_api_budget_alert_threshold ?? ""}
-                          onChange={(event) =>
-                            handleDraftFieldChange("gen_api_budget_alert_threshold", event.target.value)
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>API key Anthropic</span>
-                        <input
-                          type="password"
-                          value={appSettingsDraft.anthropic_api_key ?? ""}
-                          onChange={(event) => handleDraftFieldChange("anthropic_api_key", event.target.value)}
-                        />
-                      </label>
-                      <div className="toggle-grid">
-                        <button
-                          className={appSettingsDraft.enable_anthropic_routing ? "toggle-chip active" : "toggle-chip"}
-                          onClick={() =>
-                            handleDraftFieldChange("enable_anthropic_routing", !appSettingsDraft.enable_anthropic_routing)
-                          }
-                          type="button"
-                        >
-                          Routing Anthropic
-                        </button>
-                      </div>
-                    </section>
-
-                    <section className="settings-section">
-                      <h4>Microsoft 365 y Graph</h4>
-                      <label>
-                        <span>Tenant ID</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.office_graph_tenant_id ?? ""}
-                          onChange={(event) => handleDraftFieldChange("office_graph_tenant_id", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Client ID</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.office_graph_client_id ?? ""}
-                          onChange={(event) => handleDraftFieldChange("office_graph_client_id", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Client Secret</span>
-                        <input
-                          type="password"
-                          value={appSettingsDraft.office_graph_client_secret ?? ""}
-                          onChange={(event) => handleDraftFieldChange("office_graph_client_secret", event.target.value)}
-                        />
-                      </label>
-                    </section>
-
-                    <section className="settings-section">
-                      <h4>Infraestructura y operación</h4>
-                      <label>
-                        <span>Allowed origins</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.allowed_origins_text}
-                          onChange={(event) => handleDraftFieldChange("allowed_origins_text", event.target.value)}
-                          placeholder="http://localhost:5173"
-                        />
-                      </label>
-                      <label>
-                        <span>Storage dir</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.storage_dir}
-                          onChange={(event) => handleDraftFieldChange("storage_dir", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Audit dir</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.audit_dir}
-                          onChange={(event) => handleDraftFieldChange("audit_dir", event.target.value)}
-                        />
-                      </label>
-                      <div className="toggle-grid">
-                        <button
-                          className={appSettingsDraft.mock_corporate_data ? "toggle-chip active" : "toggle-chip"}
-                          onClick={() =>
-                            handleDraftFieldChange("mock_corporate_data", !appSettingsDraft.mock_corporate_data)
-                          }
-                          type="button"
-                        >
-                          Mock corporate data
-                        </button>
-                      </div>
-                    </section>
-                  </div>
-
-                  <section className="settings-section settings-section-full">
-                    <div className="panel-header">
-                      <h4>Integraciones corporativas</h4>
-                      <button className="secondary-button compact-button" onClick={handleAddEndpoint} type="button">
-                        Agregar endpoint
-                      </button>
-                    </div>
-                    <div className="settings-grid settings-grid-compact">
-                      <label>
-                        <span>Base URL principal</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.corporate_api_base_url ?? ""}
-                          onChange={(event) => handleDraftFieldChange("corporate_api_base_url", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Método de autenticación</span>
-                        <input
-                          type="text"
-                          value={appSettingsDraft.corporate_api_auth_method ?? ""}
-                          onChange={(event) => handleDraftFieldChange("corporate_api_auth_method", event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>Endpoints clave</span>
-                        <textarea
-                          value={appSettingsDraft.corporate_api_key_endpoints ?? ""}
-                          onChange={(event) => handleDraftFieldChange("corporate_api_key_endpoints", event.target.value)}
-                          rows={3}
-                        />
-                      </label>
-                      <label>
-                        <span>Casos prioritarios</span>
-                        <textarea
-                          value={appSettingsDraft.phase1_priority_use_cases}
-                          onChange={(event) => handleDraftFieldChange("phase1_priority_use_cases", event.target.value)}
-                          rows={3}
-                        />
-                      </label>
-                    </div>
-
-                    <div className="endpoint-list">
-                      {appSettingsDraft.corporate_endpoints.map((endpoint) => (
-                        <article className="endpoint-card" key={endpoint.id}>
-                          <div className="endpoint-card-header">
-                            <h5>{endpoint.name || "Nuevo endpoint corporativo"}</h5>
-                            <div className="endpoint-actions">
-                              <button
-                                className={endpoint.enabled ? "toggle-chip active" : "toggle-chip"}
-                                onClick={() => handleEndpointChange(endpoint.id, "enabled", !endpoint.enabled)}
-                                type="button"
-                              >
-                                {endpoint.enabled ? "Activo" : "Inactivo"}
-                              </button>
-                              <button
-                                className="ghost-button"
-                                onClick={() => handleRemoveEndpoint(endpoint.id)}
-                                type="button"
-                              >
-                                Eliminar
-                              </button>
-                            </div>
-                          </div>
-                          <div className="endpoint-grid">
-                            <label>
-                              <span>Nombre</span>
-                              <input
-                                type="text"
-                                value={endpoint.name}
-                                onChange={(event) => handleEndpointChange(endpoint.id, "name", event.target.value)}
-                              />
-                            </label>
-                            <label>
-                              <span>Base URL</span>
-                              <input
-                                type="text"
-                                value={endpoint.base_url ?? ""}
-                                onChange={(event) =>
-                                  handleEndpointChange(endpoint.id, "base_url", event.target.value)
-                                }
-                              />
-                            </label>
-                            <label>
-                              <span>Autenticación</span>
-                              <input
-                                type="text"
-                                value={endpoint.auth_method ?? ""}
-                                onChange={(event) =>
-                                  handleEndpointChange(endpoint.id, "auth_method", event.target.value)
-                                }
-                              />
-                            </label>
-                            <label>
-                              <span>Responsable</span>
-                              <input
-                                type="text"
-                                value={endpoint.owner ?? ""}
-                                onChange={(event) => handleEndpointChange(endpoint.id, "owner", event.target.value)}
-                              />
-                            </label>
-                            <label>
-                              <span>PII / alcance</span>
-                              <input
-                                type="text"
-                                value={endpoint.pii_scope ?? ""}
-                                onChange={(event) =>
-                                  handleEndpointChange(endpoint.id, "pii_scope", event.target.value)
-                                }
-                              />
-                            </label>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </section>
-                  {appSettingsMessage && <div className="success-box">{appSettingsMessage}</div>}
-
-                  <div className="settings-actions">
-                    <button className="primary-button" disabled={appSettingsSaving} type="submit">
-                      {appSettingsSaving ? "Guardando..." : "Guardar configuración"}
-                    </button>
-                  </div>
-                </form>
-              )}
+              <div className="admin-tab-list">
+                <button
+                  className={activeAdminTab === "users" ? "admin-tab-button active" : "admin-tab-button"}
+                  onClick={() => setActiveAdminTab("users")}
+                  type="button"
+                >
+                  Usuarios
+                </button>
+                <button
+                  className={activeAdminTab === "settings" ? "admin-tab-button active" : "admin-tab-button"}
+                  onClick={() => setActiveAdminTab("settings")}
+                  type="button"
+                >
+                  Configuración del App
+                </button>
+              </div>
             </div>
 
-            <div className="panel admin-panel admin-panel-users">
-              <div className="panel-header">
-                <div>
-                  <p className="eyebrow admin-eyebrow">Control de acceso</p>
-                  <h3>Administración profesional de usuarios</h3>
+            {activeAdminTab === "settings" && (
+              <div className="panel admin-panel admin-panel-settings">
+                <div className="panel-header">
+                  <div>
+                    <p className="eyebrow admin-eyebrow">Gobierno corporativo</p>
+                    <h3>Configuración del App</h3>
+                  </div>
+                  <span className="badge ok">{enabledEndpoints} endpoints activos</span>
                 </div>
-                <span className="badge ok">{filteredAdminUsers.length} visibles</span>
-              </div>
 
-              <div className="admin-overview-grid admin-overview-grid-users">
-                <article className="admin-overview-card">
-                  <strong>{adminUsers.length}</strong>
-                  <span>usuarios registrados</span>
-                </article>
-                <article className="admin-overview-card">
-                  <strong>{activeAdminUsers}</strong>
-                  <span>usuarios activos</span>
-                </article>
-                <article className="admin-overview-card">
-                  <strong>{adminUsersWithTwoFactor}</strong>
-                  <span>con doble autenticación</span>
-                </article>
-                <article className="admin-overview-card">
-                  <strong>{adminAdministrators}</strong>
-                  <span>administradores</span>
-                </article>
-              </div>
+                {appSettingsLoading && <p className="muted">Cargando configuración corporativa...</p>}
 
-              <form className="admin-form admin-form-professional" onSubmit={handleSaveAdminUser}>
-                <div className="admin-form-grid">
+                {!appSettingsLoading && (
+                  <div className="admin-overview-grid">
+                    <article className="admin-overview-card">
+                      <strong>{config?.items.length ?? 0}</strong>
+                      <span>bloques de configuración</span>
+                    </article>
+                    <article className="admin-overview-card">
+                      <strong>{editableConfigBlocks.length}</strong>
+                      <span>áreas editables</span>
+                    </article>
+                    <article className="admin-overview-card">
+                      <strong>{policy?.allowed_domains.length ?? 0}</strong>
+                      <span>dominios corporativos</span>
+                    </article>
+                    <article className="admin-overview-card">
+                      <strong>{enabledEndpoints}</strong>
+                      <span>endpoints activos</span>
+                    </article>
+                  </div>
+                )}
+
+                {appSettingsError && <div className="error-box">{appSettingsError}</div>}
+
+                {!appSettingsLoading && !appSettingsDraft && (
+                  <div className="admin-empty-state">
+                    <h4>No se pudo mostrar la configuración avanzada</h4>
+                    <p>
+                      El backend sí tiene soporte para la configuración del App, pero esta pantalla no pudo
+                      cargarlo en este momento. Puedes reintentar la lectura sin salir de la sesión.
+                    </p>
+                    <div className="admin-inline-actions">
+                      <button className="primary-button" onClick={() => void loadAdminAppSettings()} type="button">
+                        Reintentar carga
+                      </button>
+                    </div>
+                    <div className="admin-summary-list">
+                      {editableConfigBlocks.map((block) => (
+                        <span className="file-pill" key={block}>
+                          {block}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {!appSettingsLoading && appSettingsDraft && (
+                  <form className="settings-form" onSubmit={handleSaveAppSettings}>
+                    <div className="settings-subtab-list" role="tablist" aria-label="Subsecciones de configuración">
+                      {appSettingsSectionTabs.map((tab) => (
+                        <button
+                          key={tab.id}
+                          className={
+                            activeSettingsTab === tab.id ? "settings-subtab-button active" : "settings-subtab-button"
+                          }
+                          onClick={() => setActiveSettingsTab(tab.id)}
+                          role="tab"
+                          aria-selected={activeSettingsTab === tab.id}
+                          type="button"
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {activeSettingsTab === "identity" && (
+                      <section className="settings-section settings-section-single">
+                        <h4>Identidad y despliegue</h4>
+                        <div className="settings-grid">
+                          <label>
+                            <span>Nombre del App</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.app_name}
+                              onChange={(event) => handleDraftFieldChange("app_name", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Empresa</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.company_name}
+                              onChange={(event) => handleDraftFieldChange("company_name", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Industria</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.company_industry}
+                              onChange={(event) => handleDraftFieldChange("company_industry", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Superficie preferida</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.preferred_surface}
+                              onChange={(event) => handleDraftFieldChange("preferred_surface", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Despliegue</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.deployment_target}
+                              onChange={(event) => handleDraftFieldChange("deployment_target", event.target.value)}
+                            />
+                          </label>
+                        </div>
+                      </section>
+                    )}
+
+                    {activeSettingsTab === "access" && (
+                      <section className="settings-section settings-section-single">
+                        <h4>Acceso corporativo</h4>
+                        <div className="settings-grid">
+                          <label>
+                            <span>Proveedor de identidad</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.corporate_identity_provider}
+                              onChange={(event) =>
+                                handleDraftFieldChange("corporate_identity_provider", event.target.value)
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>Dominios permitidos</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.allowed_domains_text}
+                              onChange={(event) => handleDraftFieldChange("allowed_domains_text", event.target.value)}
+                              placeholder="tema.com.pe, tema.es"
+                            />
+                          </label>
+                          <label>
+                            <span>Correos administradores</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.admin_user_emails_text}
+                              onChange={(event) =>
+                                handleDraftFieldChange("admin_user_emails_text", event.target.value)
+                              }
+                              placeholder="admin@tema.com.pe, seguridad@tema.es"
+                            />
+                          </label>
+                        </div>
+                        <div className="toggle-grid">
+                          <button
+                            className={appSettingsDraft.require_corporate_email ? "toggle-chip active" : "toggle-chip"}
+                            onClick={() =>
+                              handleDraftFieldChange("require_corporate_email", !appSettingsDraft.require_corporate_email)
+                            }
+                            type="button"
+                          >
+                            Correo corporativo
+                          </button>
+                          <button
+                            className={appSettingsDraft.require_two_factor ? "toggle-chip active" : "toggle-chip"}
+                            onClick={() => handleDraftFieldChange("require_two_factor", !appSettingsDraft.require_two_factor)}
+                            type="button"
+                          >
+                            Doble autenticación
+                          </button>
+                        </div>
+                      </section>
+                    )}
+
+                    {activeSettingsTab === "governance" && (
+                      <section className="settings-section settings-section-single">
+                        <h4>Gobierno de datos</h4>
+                        <div className="settings-grid">
+                          <label>
+                            <span>Restricciones de datos</span>
+                            <textarea
+                              value={appSettingsDraft.data_restrictions ?? ""}
+                              onChange={(event) => handleDraftFieldChange("data_restrictions", event.target.value)}
+                              rows={3}
+                            />
+                          </label>
+                          <label>
+                            <span>Política PII</span>
+                            <textarea
+                              value={appSettingsDraft.pii_policy ?? ""}
+                              onChange={(event) => handleDraftFieldChange("pii_policy", event.target.value)}
+                              rows={3}
+                            />
+                          </label>
+                          <label>
+                            <span>Retención y auditoría</span>
+                            <textarea
+                              value={appSettingsDraft.retention_policy ?? ""}
+                              onChange={(event) => handleDraftFieldChange("retention_policy", event.target.value)}
+                              rows={3}
+                            />
+                          </label>
+                          <label>
+                            <span>Observabilidad</span>
+                            <textarea
+                              value={appSettingsDraft.observability_notes ?? ""}
+                              onChange={(event) => handleDraftFieldChange("observability_notes", event.target.value)}
+                              rows={3}
+                            />
+                          </label>
+                        </div>
+                      </section>
+                    )}
+
+                    {activeSettingsTab === "ai" && (
+                      <section className="settings-section settings-section-single">
+                        <h4>IA generativa y presupuesto</h4>
+                        <div className="settings-grid">
+                          <label>
+                            <span>Proveedor aprobado</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.approved_gen_ai_provider ?? ""}
+                              onChange={(event) => handleDraftFieldChange("approved_gen_ai_provider", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Proveedor imagen</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.gen_image_api_provider ?? ""}
+                              onChange={(event) => handleDraftFieldChange("gen_image_api_provider", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Proveedor video</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.gen_video_api_provider ?? ""}
+                              onChange={(event) => handleDraftFieldChange("gen_video_api_provider", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Presupuesto mensual</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.gen_api_budget_monthly ?? ""}
+                              onChange={(event) => handleDraftFieldChange("gen_api_budget_monthly", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Umbral de alerta</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.gen_api_budget_alert_threshold ?? ""}
+                              onChange={(event) =>
+                                handleDraftFieldChange("gen_api_budget_alert_threshold", event.target.value)
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>API key Anthropic</span>
+                            <input
+                              type="password"
+                              value={appSettingsDraft.anthropic_api_key ?? ""}
+                              onChange={(event) => handleDraftFieldChange("anthropic_api_key", event.target.value)}
+                            />
+                          </label>
+                        </div>
+                        <div className="toggle-grid">
+                          <button
+                            className={appSettingsDraft.enable_anthropic_routing ? "toggle-chip active" : "toggle-chip"}
+                            onClick={() =>
+                              handleDraftFieldChange("enable_anthropic_routing", !appSettingsDraft.enable_anthropic_routing)
+                            }
+                            type="button"
+                          >
+                            Routing Anthropic
+                          </button>
+                        </div>
+                      </section>
+                    )}
+
+                    {activeSettingsTab === "microsoft" && (
+                      <section className="settings-section settings-section-single">
+                        <h4>Microsoft 365 y Graph</h4>
+                        <div className="settings-grid">
+                          <label>
+                            <span>Tenant ID</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.office_graph_tenant_id ?? ""}
+                              onChange={(event) => handleDraftFieldChange("office_graph_tenant_id", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Client ID</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.office_graph_client_id ?? ""}
+                              onChange={(event) => handleDraftFieldChange("office_graph_client_id", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Client Secret</span>
+                            <input
+                              type="password"
+                              value={appSettingsDraft.office_graph_client_secret ?? ""}
+                              onChange={(event) =>
+                                handleDraftFieldChange("office_graph_client_secret", event.target.value)
+                              }
+                            />
+                          </label>
+                        </div>
+                      </section>
+                    )}
+
+                    {activeSettingsTab === "infrastructure" && (
+                      <section className="settings-section settings-section-single">
+                        <h4>Infraestructura y operación</h4>
+                        <div className="settings-grid">
+                          <label>
+                            <span>Allowed origins</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.allowed_origins_text}
+                              onChange={(event) => handleDraftFieldChange("allowed_origins_text", event.target.value)}
+                              placeholder="http://localhost:5173"
+                            />
+                          </label>
+                          <label>
+                            <span>Storage dir</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.storage_dir}
+                              onChange={(event) => handleDraftFieldChange("storage_dir", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Audit dir</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.audit_dir}
+                              onChange={(event) => handleDraftFieldChange("audit_dir", event.target.value)}
+                            />
+                          </label>
+                        </div>
+                        <div className="toggle-grid">
+                          <button
+                            className={appSettingsDraft.mock_corporate_data ? "toggle-chip active" : "toggle-chip"}
+                            onClick={() =>
+                              handleDraftFieldChange("mock_corporate_data", !appSettingsDraft.mock_corporate_data)
+                            }
+                            type="button"
+                          >
+                            Mock corporate data
+                          </button>
+                        </div>
+                      </section>
+                    )}
+
+                    {activeSettingsTab === "integrations" && (
+                      <section className="settings-section settings-section-single settings-section-full">
+                        <div className="panel-header">
+                          <h4>Integraciones corporativas</h4>
+                          <button className="secondary-button compact-button" onClick={handleAddEndpoint} type="button">
+                            Agregar endpoint
+                          </button>
+                        </div>
+                        <div className="settings-grid settings-grid-compact">
+                          <label>
+                            <span>Base URL principal</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.corporate_api_base_url ?? ""}
+                              onChange={(event) => handleDraftFieldChange("corporate_api_base_url", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Método de autenticación</span>
+                            <input
+                              type="text"
+                              value={appSettingsDraft.corporate_api_auth_method ?? ""}
+                              onChange={(event) => handleDraftFieldChange("corporate_api_auth_method", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            <span>Endpoints clave</span>
+                            <textarea
+                              value={appSettingsDraft.corporate_api_key_endpoints ?? ""}
+                              onChange={(event) => handleDraftFieldChange("corporate_api_key_endpoints", event.target.value)}
+                              rows={3}
+                            />
+                          </label>
+                          <label>
+                            <span>Casos prioritarios</span>
+                            <textarea
+                              value={appSettingsDraft.phase1_priority_use_cases}
+                              onChange={(event) => handleDraftFieldChange("phase1_priority_use_cases", event.target.value)}
+                              rows={3}
+                            />
+                          </label>
+                        </div>
+
+                        <div className="endpoint-list">
+                          {appSettingsDraft.corporate_endpoints.map((endpoint) => (
+                            <article className="endpoint-card" key={endpoint.id}>
+                              <div className="endpoint-card-header">
+                                <h5>{endpoint.name || "Nuevo endpoint corporativo"}</h5>
+                                <div className="endpoint-actions">
+                                  <button
+                                    className={endpoint.enabled ? "toggle-chip active" : "toggle-chip"}
+                                    onClick={() => handleEndpointChange(endpoint.id, "enabled", !endpoint.enabled)}
+                                    type="button"
+                                  >
+                                    {endpoint.enabled ? "Activo" : "Inactivo"}
+                                  </button>
+                                  <button
+                                    className="ghost-button"
+                                    onClick={() => handleRemoveEndpoint(endpoint.id)}
+                                    type="button"
+                                  >
+                                    Eliminar
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="endpoint-grid">
+                                <label>
+                                  <span>Nombre</span>
+                                  <input
+                                    type="text"
+                                    value={endpoint.name}
+                                    onChange={(event) => handleEndpointChange(endpoint.id, "name", event.target.value)}
+                                  />
+                                </label>
+                                <label>
+                                  <span>Base URL</span>
+                                  <input
+                                    type="text"
+                                    value={endpoint.base_url ?? ""}
+                                    onChange={(event) =>
+                                      handleEndpointChange(endpoint.id, "base_url", event.target.value)
+                                    }
+                                  />
+                                </label>
+                                <label>
+                                  <span>Autenticación</span>
+                                  <input
+                                    type="text"
+                                    value={endpoint.auth_method ?? ""}
+                                    onChange={(event) =>
+                                      handleEndpointChange(endpoint.id, "auth_method", event.target.value)
+                                    }
+                                  />
+                                </label>
+                                <label>
+                                  <span>Responsable</span>
+                                  <input
+                                    type="text"
+                                    value={endpoint.owner ?? ""}
+                                    onChange={(event) => handleEndpointChange(endpoint.id, "owner", event.target.value)}
+                                  />
+                                </label>
+                                <label>
+                                  <span>PII / alcance</span>
+                                  <input
+                                    type="text"
+                                    value={endpoint.pii_scope ?? ""}
+                                    onChange={(event) =>
+                                      handleEndpointChange(endpoint.id, "pii_scope", event.target.value)
+                                    }
+                                  />
+                                </label>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                    {appSettingsMessage && <div className="success-box">{appSettingsMessage}</div>}
+
+                    <div className="settings-actions">
+                      <button className="primary-button" disabled={appSettingsSaving} type="submit">
+                        {appSettingsSaving ? "Guardando..." : "Guardar configuración"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {activeAdminTab === "users" && (
+              <div className="panel admin-panel admin-panel-users">
+                <div className="panel-header">
+                  <div>
+                    <p className="eyebrow admin-eyebrow">Control de acceso</p>
+                    <h3>Administración profesional de usuarios</h3>
+                  </div>
+                  <span className="badge ok">{filteredAdminUsers.length} visibles</span>
+                </div>
+
+                <div className="admin-overview-grid admin-overview-grid-users">
+                  <article className="admin-overview-card">
+                    <strong>{adminUsers.length}</strong>
+                    <span>usuarios registrados</span>
+                  </article>
+                  <article className="admin-overview-card">
+                    <strong>{activeAdminUsers}</strong>
+                    <span>usuarios activos</span>
+                  </article>
+                  <article className="admin-overview-card">
+                    <strong>{adminUsersWithTwoFactor}</strong>
+                    <span>con doble autenticación</span>
+                  </article>
+                  <article className="admin-overview-card">
+                    <strong>{adminAdministrators}</strong>
+                    <span>administradores</span>
+                  </article>
+                </div>
+
+                <form className="admin-form admin-form-professional" onSubmit={handleSaveAdminUser}>
+                  <div className="admin-form-grid">
+                    <label>
+                      <span>Nombre completo</span>
+                      <input
+                        type="text"
+                        placeholder="Nombre completo"
+                        value={adminForm.name}
+                        onChange={(event) => handleAdminFormChange("name", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>Correo corporativo</span>
+                      <input
+                        type="email"
+                        placeholder="usuario@tema.com.pe"
+                        value={adminForm.email}
+                        onChange={(event) => handleAdminFormChange("email", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>Rol</span>
+                      <select value={adminForm.role} onChange={(event) => handleAdminFormChange("role", event.target.value)}>
+                        {adminRoleOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{editingAdminUserId ? "Nueva contraseña" : "Contraseña inicial"}</span>
+                      <div className="admin-password-field">
+                        <input
+                          type={showAdminPassword ? "text" : "password"}
+                          placeholder={editingAdminUserId ? "Dejar vacío para mantener la actual" : "Mínimo 8 caracteres"}
+                          value={adminForm.password}
+                          onChange={(event) => handleAdminFormChange("password", event.target.value)}
+                        />
+                        <button
+                          className="admin-password-toggle"
+                          onClick={() => setShowAdminPassword((current) => !current)}
+                          type="button"
+                        >
+                          {showAdminPassword ? "Ocultar" : "Ver"}
+                        </button>
+                      </div>
+                    </label>
+                    <label>
+                      <span>{editingAdminUserId ? "Confirmar nueva contraseña" : "Confirmar contraseña"}</span>
+                      <div className="admin-password-field">
+                        <input
+                          type={showAdminPasswordConfirmation ? "text" : "password"}
+                          placeholder="Repite la contraseña"
+                          value={adminForm.password_confirmation}
+                          onChange={(event) => handleAdminFormChange("password_confirmation", event.target.value)}
+                        />
+                        <button
+                          className="admin-password-toggle"
+                          onClick={() => setShowAdminPasswordConfirmation((current) => !current)}
+                          type="button"
+                        >
+                          {showAdminPasswordConfirmation ? "Ocultar" : "Ver"}
+                        </button>
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="toggle-grid">
+                    <button
+                      className={adminForm.active ? "toggle-chip active" : "toggle-chip"}
+                      onClick={() => handleAdminFormChange("active", !adminForm.active)}
+                      type="button"
+                    >
+                      {adminForm.active ? "Usuario activo" : "Usuario inactivo"}
+                    </button>
+                    <button
+                      className={adminForm.two_factor_enabled ? "toggle-chip active" : "toggle-chip"}
+                      onClick={() => handleAdminFormChange("two_factor_enabled", !adminForm.two_factor_enabled)}
+                      type="button"
+                    >
+                      {adminForm.two_factor_enabled ? "2FA habilitado" : "2FA deshabilitado"}
+                    </button>
+                  </div>
+
+                  <div className="admin-form-actions">
+                    <button className="primary-button" type="submit">
+                      {editingAdminUserId ? "Guardar usuario" : "Registrar usuario"}
+                    </button>
+                    {editingAdminUserId && (
+                      <button className="secondary-button compact-button" onClick={handleCancelAdminEdit} type="button">
+                        Cancelar edición
+                      </button>
+                    )}
+                  </div>
+                </form>
+
+                <div className="admin-toolbar">
                   <label>
-                    <span>Nombre completo</span>
+                    <span>Buscar usuario</span>
                     <input
                       type="text"
-                      placeholder="Nombre completo"
-                      value={adminForm.name}
-                      onChange={(event) => handleAdminFormChange("name", event.target.value)}
+                      placeholder="Nombre, correo o rol"
+                      value={adminUserSearch}
+                      onChange={(event) => setAdminUserSearch(event.target.value)}
                     />
                   </label>
                   <label>
-                    <span>Correo corporativo</span>
-                    <input
-                      type="email"
-                      placeholder="usuario@tema.com.pe"
-                      value={adminForm.email}
-                      onChange={(event) => handleAdminFormChange("email", event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>Rol</span>
-                    <select value={adminForm.role} onChange={(event) => handleAdminFormChange("role", event.target.value)}>
+                    <span>Filtrar por rol</span>
+                    <select value={adminRoleFilter} onChange={(event) => setAdminRoleFilter(event.target.value)}>
+                      <option value="todos">Todos los roles</option>
                       {adminRoleOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
+                        <option key={`filter-${option.value}`} value={option.value}>
                           {option.label}
                         </option>
                       ))}
                     </select>
                   </label>
                   <label>
-                    <span>{editingAdminUserId ? "Nueva contraseña" : "Contraseña inicial"}</span>
-                    <input
-                      type="password"
-                      placeholder={editingAdminUserId ? "Dejar vacío para mantener la actual" : "Mínimo 8 caracteres"}
-                      value={adminForm.password}
-                      onChange={(event) => handleAdminFormChange("password", event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>{editingAdminUserId ? "Confirmar nueva contraseña" : "Confirmar contraseña"}</span>
-                    <input
-                      type="password"
-                      placeholder="Repite la contraseña"
-                      value={adminForm.password_confirmation}
-                      onChange={(event) => handleAdminFormChange("password_confirmation", event.target.value)}
-                    />
+                    <span>Filtrar por estado</span>
+                    <select value={adminStatusFilter} onChange={(event) => setAdminStatusFilter(event.target.value)}>
+                      <option value="todos">Todos</option>
+                      <option value="activos">Activos</option>
+                      <option value="inactivos">Inactivos</option>
+                      <option value="2fa">2FA habilitado</option>
+                    </select>
                   </label>
                 </div>
 
-                <div className="toggle-grid">
-                  <button
-                    className={adminForm.active ? "toggle-chip active" : "toggle-chip"}
-                    onClick={() => handleAdminFormChange("active", !adminForm.active)}
-                    type="button"
-                  >
-                    {adminForm.active ? "Usuario activo" : "Usuario inactivo"}
-                  </button>
-                  <button
-                    className={adminForm.two_factor_enabled ? "toggle-chip active" : "toggle-chip"}
-                    onClick={() => handleAdminFormChange("two_factor_enabled", !adminForm.two_factor_enabled)}
-                    type="button"
-                  >
-                    {adminForm.two_factor_enabled ? "2FA habilitado" : "2FA deshabilitado"}
-                  </button>
-                </div>
+                {adminMessage && <div className="success-box">{adminMessage}</div>}
+                {adminError && <div className="error-box">{adminError}</div>}
+                <p className="muted">
+                  {editingAdminUserId
+                    ? "Puedes cambiar la clave del usuario desde este formulario. Si dejas la contraseña vacía, se conserva la actual."
+                    : "Al registrar un usuario debes asignar una contraseña inicial segura. Luego podrá autenticarse con esa clave y el 2FA."}
+                </p>
 
-                <div className="admin-form-actions">
-                  <button className="primary-button" type="submit">
-                    {editingAdminUserId ? "Guardar usuario" : "Registrar usuario"}
-                  </button>
-                  {editingAdminUserId && (
-                    <button className="secondary-button compact-button" onClick={handleCancelAdminEdit} type="button">
-                      Cancelar edición
-                    </button>
-                  )}
-                </div>
-              </form>
-
-              <div className="admin-toolbar">
-                <label>
-                  <span>Buscar usuario</span>
-                  <input
-                    type="text"
-                    placeholder="Nombre, correo o rol"
-                    value={adminUserSearch}
-                    onChange={(event) => setAdminUserSearch(event.target.value)}
-                  />
-                </label>
-                <label>
-                  <span>Filtrar por rol</span>
-                  <select value={adminRoleFilter} onChange={(event) => setAdminRoleFilter(event.target.value)}>
-                    <option value="todos">Todos los roles</option>
-                    {adminRoleOptions.map((option) => (
-                      <option key={`filter-${option.value}`} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Filtrar por estado</span>
-                  <select value={adminStatusFilter} onChange={(event) => setAdminStatusFilter(event.target.value)}>
-                    <option value="todos">Todos</option>
-                    <option value="activos">Activos</option>
-                    <option value="inactivos">Inactivos</option>
-                    <option value="2fa">2FA habilitado</option>
-                  </select>
-                </label>
-              </div>
-
-              {adminMessage && <div className="success-box">{adminMessage}</div>}
-              {adminError && <div className="error-box">{adminError}</div>}
-              <p className="muted">
-                {editingAdminUserId
-                  ? "Puedes cambiar la clave del usuario desde este formulario. Si dejas la contraseña vacía, se conserva la actual."
-                  : "Al registrar un usuario debes asignar una contraseña inicial segura. Luego podrá autenticarse con esa clave y el 2FA."}
-              </p>
-
-              <div className="admin-table">
-                <div className="admin-table-header">
-                  <span>Usuario</span>
-                  <span>Rol</span>
-                  <span>Estado</span>
-                  <span>Acciones</span>
-                </div>
-                {adminLoading && <p className="muted">Cargando usuarios...</p>}
-                {!adminLoading && filteredAdminUsers.length === 0 && (
-                  <div className="admin-empty-state">
-                    <h4>No hay coincidencias</h4>
-                    <p>Ajusta la búsqueda o los filtros para localizar usuarios registrados.</p>
+                <div className="admin-table">
+                  <div className="admin-table-header">
+                    <span>Usuario</span>
+                    <span>Rol</span>
+                    <span>Estado</span>
+                    <span>Acciones</span>
                   </div>
-                )}
-                {!adminLoading &&
-                  filteredAdminUsers.map((user) => (
-                    <div className="admin-row" key={user.id}>
-                      <div>
-                        <span className="admin-cell-label">Usuario</span>
-                        <strong>{user.name}</strong>
-                        <p>{user.email}</p>
-                        <p>{user.password_set ? "Contraseña configurada" : "Contraseña pendiente"}</p>
-                        <p>Clave actualizada: {formatDateTime(user.password_changed_at)}</p>
-                        <p>Alta: {formatDateTime(user.created_at)} | Actualización: {formatDateTime(user.updated_at)}</p>
-                      </div>
-                      <div className="admin-row-meta">
-                        <span className="admin-cell-label">Rol</span>
-                        <span>{getAdminRoleLabel(user.role)}</span>
-                      </div>
-                      <div className="admin-row-meta">
-                        <span className="admin-cell-label">Estado</span>
-                        <span>{user.active ? "Activo" : "Inactivo"}</span>
-                        <span>{user.two_factor_enabled ? "2FA habilitado" : "2FA deshabilitado"}</span>
-                      </div>
-                      <div className="admin-row-meta admin-row-actions">
-                        <span className="admin-cell-label">Acciones</span>
-                        <button className="table-action" onClick={() => handleEditAdminUser(user)} type="button">
-                          Editar
-                        </button>
-                        <button className="table-action" onClick={() => handleAdminToggle(user, "active")} type="button">
-                          {user.active ? "Desactivar" : "Activar"}
-                        </button>
-                        <button
-                          className="table-action"
-                          onClick={() => handleAdminToggle(user, "two_factor_enabled")}
-                          type="button"
-                        >
-                          {user.two_factor_enabled ? "Deshabilitar 2FA" : "Habilitar 2FA"}
-                        </button>
-                        <button className="ghost-button compact-button" onClick={() => handleDeleteAdminUser(user)} type="button">
-                          Eliminar
-                        </button>
-                      </div>
+                  {adminLoading && <p className="muted">Cargando usuarios...</p>}
+                  {!adminLoading && filteredAdminUsers.length === 0 && (
+                    <div className="admin-empty-state">
+                      <h4>No hay coincidencias</h4>
+                      <p>Ajusta la búsqueda o los filtros para localizar usuarios registrados.</p>
                     </div>
-                  ))}
+                  )}
+                  {!adminLoading &&
+                    filteredAdminUsers.map((user) => (
+                      <div className="admin-row" key={user.id}>
+                        <div>
+                          <span className="admin-cell-label">Usuario</span>
+                          <strong>{user.name}</strong>
+                          <p>{user.email}</p>
+                          <p>{user.password_set ? "Contraseña configurada" : "Contraseña pendiente"}</p>
+                          <p>Clave actualizada: {formatDateTime(user.password_changed_at)}</p>
+                          <p>Alta: {formatDateTime(user.created_at)} | Actualización: {formatDateTime(user.updated_at)}</p>
+                        </div>
+                        <div className="admin-row-meta">
+                          <span className="admin-cell-label">Rol</span>
+                          <span>{getAdminRoleLabel(user.role)}</span>
+                        </div>
+                        <div className="admin-row-meta">
+                          <span className="admin-cell-label">Estado</span>
+                          <span>{user.active ? "Activo" : "Inactivo"}</span>
+                          <span>{user.two_factor_enabled ? "2FA habilitado" : "2FA deshabilitado"}</span>
+                        </div>
+                        <div className="admin-row-meta admin-row-actions">
+                          <span className="admin-cell-label">Acciones</span>
+                          <button className="table-action" onClick={() => handleEditAdminUser(user)} type="button">
+                            Editar
+                          </button>
+                          <button className="table-action" onClick={() => handleAdminToggle(user, "active")} type="button">
+                            {user.active ? "Desactivar" : "Activar"}
+                          </button>
+                          <button
+                            className="table-action"
+                            onClick={() => handleAdminToggle(user, "two_factor_enabled")}
+                            type="button"
+                          >
+                            {user.two_factor_enabled ? "Deshabilitar 2FA" : "Habilitar 2FA"}
+                          </button>
+                          <button className="ghost-button compact-button" onClick={() => handleDeleteAdminUser(user)} type="button">
+                            Eliminar
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
               </div>
-            </div>
+            )}
           </section>
         )}
       </main>
