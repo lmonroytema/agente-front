@@ -1051,6 +1051,28 @@ button:hover {
   height: 42px;
 }
 
+.login-password-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.login-password-field input {
+  min-width: 0;
+}
+
+.login-password-toggle {
+  height: 42px;
+  border: 1px solid rgba(145, 0, 41, 0.16);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(246, 226, 230, 0.92), rgba(253, 231, 222, 0.86));
+  color: #512a35;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 14px;
+}
+
 .login-button {
   margin-top: 6px;
   height: 44px;

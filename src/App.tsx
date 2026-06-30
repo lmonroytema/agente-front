@@ -5,6 +5,9 @@ const API_BASE =
   (window.location.port === "5173" ? "http://127.0.0.1:8000" : window.location.origin);
 const PORTADA_IMAGE = "/imagenes/portada.png";
 const LOGO_TEMA_IMAGE = "/imagenes/logo-tema.png";
+const MAX_UPLOAD_FILE_SIZE_MB = 1024;
+const MAX_UPLOAD_FILE_SIZE_BYTES = MAX_UPLOAD_FILE_SIZE_MB * 1024 * 1024;
+const MAX_UPLOAD_FILES_PER_REQUEST = 10;
 
 type ConfigItem = {
   key: string;
@@ -164,7 +167,6 @@ const starterPrompts = [
   "Compara los resultados de agua cargados contra los umbrales ECA",
   "Genera un informe trimestral de monitoreo ambiental con los datos cargados",
   "Quita los folios del área inferior derecha desde la página 1 hasta la página 2",
-  "Evalúa si ya existe un módulo para aprobaciones multinivel y si no propónlo para backend y frontend",
 ];
 
 const sectionMeta: Array<{ id: WorkspaceSection; label: string; description: string }> = [
@@ -287,6 +289,22 @@ function buildPdfReadingInstruction(prompt: string): string {
   );
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+  }
+
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(0)} KB`;
+  }
+
+  return `${bytes} B`;
+}
+
 async function parseJsonResponse<T>(response: Response): Promise<T | null> {
   const raw = await response.text();
   if (!raw.trim()) {
@@ -351,7 +369,9 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginMessage, setLoginMessage] = useState<string | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
   const [twoFactorCode, setTwoFactorCode] = useState("");
   const [twoFactorError, setTwoFactorError] = useState<string | null>(null);
@@ -527,14 +547,55 @@ function App() {
     [capabilities],
   );
 
-  const handlePromptShortcut = (prompt: string, nextSection: WorkspaceSection = "operacion") => {
+  const submitPrompt = async (requestMessage: string, nextSection: WorkspaceSection = "operacion") => {
+    const cleanMessage = requestMessage.trim();
+    if (cleanMessage.length < 3) {
+      setError("Describe la solicitud con mayor detalle.");
+      setActiveSection(nextSection);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setMessage(cleanMessage);
+    setActiveSection(nextSection);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: cleanMessage,
+          uploaded_file_ids: uploadedFiles.map((file) => file.id),
+        }),
+      });
+      const payload = await parseJsonResponse<ChatResponse & ApiErrorPayload>(response);
+      if (!response.ok) {
+        throw new Error(getErrorMessage(payload as unknown as ApiErrorPayload, "La orquestación falló. Revisa el backend."));
+      }
+      if (!payload) {
+        throw new Error("La API no devolvió resultado para la consulta.");
+      }
+      setResult(payload);
+      setActiveSection("operacion");
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Error al consultar el agente.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePromptShortcut = (prompt: string, nextSection: WorkspaceSection = "operacion", autoRun = true) => {
     setMessage(prompt);
     setActiveSection(nextSection);
+
+    if (autoRun && !loading) {
+      void submitPrompt(prompt, nextSection);
+    }
   };
 
   const handlePreparePdfReading = () => {
-    setMessage(buildPdfReadingInstruction(pdfReadingPrompt));
-    setActiveSection("operacion");
+    handlePromptShortcut(buildPdfReadingInstruction(pdfReadingPrompt));
   };
 
   const handleStartVoicePrompt = () => {
@@ -581,9 +642,6 @@ function App() {
     setIsListening(false);
   };
 
-  const MAX_UPLOAD_FILE_SIZE_BYTES = 25 * 1024 * 1024;
-  const MAX_UPLOAD_FILES_PER_REQUEST = 10;
-
   const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0) {
@@ -598,7 +656,7 @@ function App() {
 
     const oversized = Array.from(files).find((file) => file.size > MAX_UPLOAD_FILE_SIZE_BYTES);
     if (oversized) {
-      setError(`El archivo "${oversized.name}" supera el límite de 25 MB.`);
+      setError(`El archivo "${oversized.name}" supera el límite de ${MAX_UPLOAD_FILE_SIZE_MB} MB.`);
       event.target.value = "";
       return;
     }
@@ -629,36 +687,12 @@ function App() {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch(`${API_BASE}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message,
-          uploaded_file_ids: uploadedFiles.map((file) => file.id),
-        }),
-      });
-      const payload = await parseJsonResponse<ChatResponse & ApiErrorPayload>(response);
-      if (!response.ok) {
-        throw new Error(getErrorMessage(payload as unknown as ApiErrorPayload, "La orquestación falló. Revisa el backend."));
-      }
-      if (!payload) {
-        throw new Error("La API no devolvió resultado para la consulta.");
-      }
-      setResult(payload);
-      setActiveSection("operacion");
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Error al consultar el agente.");
-    } finally {
-      setLoading(false);
-    }
+    await submitPrompt(message);
   };
 
-  const handleCorporateLogin = async (event: FormEvent) => {
-    event.preventDefault();
+  const requestCorporateLogin = async (mode: "login" | "activate_2fa" = "login") => {
     setLoginError(null);
+    setLoginMessage(null);
     setLoginLoading(true);
     try {
       const response = await fetch(`${API_BASE}/api/auth/login`, {
@@ -678,14 +712,39 @@ function App() {
       }
       if (payload.requires_two_factor) {
         setPendingLogin(payload);
+        setTwoFactorCode("");
+        setTwoFactorError(null);
+        setLoginMessage(
+          mode === "activate_2fa"
+            ? "Código de doble autenticación generado. Revisa el panel de validación."
+            : null,
+        );
         return;
       }
+
+      if (mode === "activate_2fa") {
+        throw new Error(
+          policy?.require_two_factor
+            ? "La doble autenticación no está habilitada para este usuario."
+            : "La doble autenticación global está desactivada en la configuración del App.",
+        );
+      }
+
       setSession(payload);
     } catch (loginFailure) {
       setLoginError(loginFailure instanceof Error ? loginFailure.message : "Error de autenticación.");
     } finally {
       setLoginLoading(false);
     }
+  };
+
+  const handleCorporateLogin = async (event: FormEvent) => {
+    event.preventDefault();
+    await requestCorporateLogin("login");
+  };
+
+  const handleActivationCodeRequest = async () => {
+    await requestCorporateLogin("activate_2fa");
   };
 
   const handleTwoFactor = async (event: FormEvent) => {
@@ -874,6 +933,7 @@ function App() {
     setSession(null);
     setPendingLogin(null);
     setTwoFactorCode("");
+    setLoginMessage(null);
     setActiveSection("inicio");
   };
 
@@ -933,13 +993,22 @@ function App() {
 
                     <label>
                       <span>Contraseña</span>
-                      <input
-                        type="password"
-                        value={loginPassword}
-                        onChange={(event) => setLoginPassword(event.target.value)}
-                        placeholder="Ingresa tu contraseña"
-                        autoComplete="current-password"
-                      />
+                      <div className="login-password-field">
+                        <input
+                          type={showLoginPassword ? "text" : "password"}
+                          value={loginPassword}
+                          onChange={(event) => setLoginPassword(event.target.value)}
+                          placeholder="Ingresa tu contraseña"
+                          autoComplete="current-password"
+                        />
+                        <button
+                          className="login-password-toggle"
+                          onClick={() => setShowLoginPassword((current) => !current)}
+                          type="button"
+                        >
+                          {showLoginPassword ? "Ocultar" : "Ver"}
+                        </button>
+                      </div>
                     </label>
 
                     <button className="login-button" disabled={loginLoading} type="submit">
@@ -951,7 +1020,7 @@ function App() {
                     <button className="login-text-link" type="button">
                       ¿Has olvidado tu contraseña?
                     </button>
-                    <button className="login-text-link" type="button">
+                    <button className="login-text-link" onClick={() => void handleActivationCodeRequest()} type="button">
                       Código de activación
                     </button>
                   </div>
@@ -961,6 +1030,7 @@ function App() {
                     <p>Dominios: {corporateDomainHint || "pendientes de parametrizar"}</p>
                   </div>
 
+                  {loginMessage && <div className="warning-box">{loginMessage}</div>}
                   {loginError && <div className="error-box">{loginError}</div>}
                 </>
               ) : (
@@ -986,6 +1056,9 @@ function App() {
                       {twoFactorLoading ? "Verificando..." : "Validar código"}
                     </button>
                   </form>
+                  <button className="login-text-link" onClick={() => void handleActivationCodeRequest()} type="button">
+                    Reenviar código
+                  </button>
                   <button className="secondary-button" onClick={() => setPendingLogin(null)} type="button">
                     Volver al inicio de sesión
                   </button>
@@ -1245,7 +1318,7 @@ function App() {
                       onClick={() => handlePromptShortcut(workflow.prompt)}
                       type="button"
                     >
-                      Usar en operación
+                      Ejecutar flujo
                     </button>
                   </article>
                 ))}
@@ -1273,7 +1346,7 @@ function App() {
                       onClick={() => handlePromptShortcut(workflow.prompt)}
                       type="button"
                     >
-                      Usar receta
+                      Ejecutar
                     </button>
                   </article>
                 ))}
@@ -1294,12 +1367,15 @@ function App() {
                     />
                   </label>
                 </div>
+                <p className="muted">
+                  Admite hasta {MAX_UPLOAD_FILE_SIZE_MB} MB por archivo y {MAX_UPLOAD_FILES_PER_REQUEST} archivos por solicitud.
+                </p>
 
                 <div className="uploaded-list">
                   {uploadedFiles.length === 0 && <p className="muted">No hay archivos cargados.</p>}
                   {uploadedFiles.map((file) => (
                     <span className="file-pill" key={file.id}>
-                      {file.name}
+                      {file.name} · {formatFileSize(file.size)}
                     </span>
                   ))}
                 </div>
@@ -1411,7 +1487,7 @@ function App() {
                       onClick={() => handlePromptShortcut(spotlight.prompt)}
                       type="button"
                     >
-                      Probar especialidad
+                      Ejecutar especialidad
                     </button>
                   </article>
                 ))}
@@ -1443,7 +1519,7 @@ function App() {
                       }
                       type="button"
                     >
-                      Probar módulo
+                      Ejecutar módulo
                     </button>
                   </article>
                 ))}
@@ -1536,7 +1612,7 @@ function App() {
                       onClick={() => handlePromptShortcut(workflow.prompt)}
                       type="button"
                     >
-                      Enviar a operación
+                      Ejecutar acción
                     </button>
                   </article>
                 ))}
