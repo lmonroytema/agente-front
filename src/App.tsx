@@ -73,6 +73,11 @@ type LoginResponse = {
   masked_destination?: string | null;
 };
 
+type PasswordResetResponse = {
+  success: boolean;
+  message: string;
+};
+
 type AdminUser = {
   id: string;
   name: string;
@@ -80,6 +85,8 @@ type AdminUser = {
   role: string;
   active: boolean;
   two_factor_enabled: boolean;
+  password_set?: boolean;
+  password_changed_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -90,6 +97,8 @@ type AdminUserDraft = {
   role: string;
   active: boolean;
   two_factor_enabled: boolean;
+  password: string;
+  password_confirmation: string;
 };
 
 type CorporateEndpoint = {
@@ -150,6 +159,11 @@ type ApiErrorPayload = {
 };
 
 type WorkspaceSection = "inicio" | "operacion" | "modulos" | "archivos" | "admin";
+
+type PasswordResetContext = {
+  reset_id: string;
+  token: string;
+};
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -360,6 +374,8 @@ function createAdminUserDraft(): AdminUserDraft {
     role: "analista",
     active: true,
     two_factor_enabled: true,
+    password: "",
+    password_confirmation: "",
   };
 }
 
@@ -388,6 +404,21 @@ function formatDateTime(value?: string | null): string {
     dateStyle: "short",
     timeStyle: "short",
   }).format(parsed);
+}
+
+function appendPromptText(base: string, addition: string): string {
+  const trimmedBase = base.trim();
+  const trimmedAddition = addition.trim();
+
+  if (!trimmedAddition) {
+    return base;
+  }
+
+  if (!trimmedBase) {
+    return trimmedAddition;
+  }
+
+  return `${trimmedBase} ${trimmedAddition}`;
 }
 
 function toSettingsDraft(settings: AdminAppSettings): AdminAppSettingsDraft {
@@ -420,6 +451,12 @@ function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginMessage, setLoginMessage] = useState<string | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
+  const [passwordResetContext, setPasswordResetContext] = useState<PasswordResetContext | null>(null);
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetPasswordConfirmation, setResetPasswordConfirmation] = useState("");
+  const [passwordResetError, setPasswordResetError] = useState<string | null>(null);
+  const [passwordResetMessage, setPasswordResetMessage] = useState<string | null>(null);
+  const [passwordResetLoading, setPasswordResetLoading] = useState(false);
   const [twoFactorCode, setTwoFactorCode] = useState("");
   const [twoFactorError, setTwoFactorError] = useState<string | null>(null);
   const [twoFactorLoading, setTwoFactorLoading] = useState(false);
@@ -445,6 +482,7 @@ function App() {
   const [isListening, setIsListening] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const speechPromptBaseRef = useRef("");
 
   const loadInitialData = async () => {
     const [configResponse, capabilitiesResponse, policyResponse] = await Promise.all([
@@ -516,6 +554,20 @@ function App() {
           : "No se pudo conectar con el backend. Verifica que Laravel esté corriendo.",
       );
     });
+  }, []);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const resetId = url.searchParams.get("reset_id");
+    const token = url.searchParams.get("token");
+
+    if (resetId && token) {
+      setPasswordResetContext({ reset_id: resetId, token });
+      setPendingLogin(null);
+      setLoginError(null);
+      setLoginMessage(null);
+      setPasswordResetError(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -695,6 +747,7 @@ function App() {
 
     speechRecognitionRef.current?.stop();
     const recognition = new Recognition();
+    speechPromptBaseRef.current = pdfReadingPrompt;
     recognition.lang = "es-ES";
     recognition.interimResults = true;
     recognition.continuous = false;
@@ -705,7 +758,7 @@ function App() {
         .join(" ")
         .trim();
       if (transcript) {
-        setPdfReadingPrompt(transcript);
+        setPdfReadingPrompt(appendPromptText(speechPromptBaseRef.current, transcript));
       }
     };
 
@@ -777,6 +830,13 @@ function App() {
     await submitPrompt(message);
   };
 
+  const clearPasswordResetQuery = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("reset_id");
+    url.searchParams.delete("token");
+    window.history.replaceState({}, "", url.toString());
+  };
+
   const requestCorporateLogin = async (mode: "login" | "activate_2fa" = "login") => {
     setLoginError(null);
     setLoginMessage(null);
@@ -828,6 +888,43 @@ function App() {
   const handleCorporateLogin = async (event: FormEvent) => {
     event.preventDefault();
     await requestCorporateLogin("login");
+  };
+
+  const handleForgotPasswordRequest = async () => {
+    setLoginError(null);
+    setLoginMessage(null);
+
+    if (!loginEmail.trim()) {
+      setLoginError("Ingresa tu correo corporativo para enviarte el enlace de recuperación.");
+      return;
+    }
+
+    setPasswordResetLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/forgot-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: loginEmail,
+        }),
+      });
+      const payload = await parseJsonResponse<PasswordResetResponse & ApiErrorPayload>(response);
+      if (!response.ok) {
+        throw new Error(getErrorMessage(payload, "No fue posible enviar el enlace de recuperación."));
+      }
+      setLoginMessage(
+        payload?.message ??
+          "Si el correo está habilitado, enviaremos un enlace seguro para restablecer la contraseña.",
+      );
+    } catch (forgotPasswordError) {
+      setLoginError(
+        forgotPasswordError instanceof Error
+          ? forgotPasswordError.message
+          : "Error al solicitar la recuperación de contraseña.",
+      );
+    } finally {
+      setPasswordResetLoading(false);
+    }
   };
 
   const handleActivationCodeRequest = async () => {
@@ -907,6 +1004,56 @@ function App() {
     }
   };
 
+  const handlePasswordReset = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!passwordResetContext) {
+      return;
+    }
+
+    setPasswordResetError(null);
+    setPasswordResetMessage(null);
+    setPasswordResetLoading(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reset_id: passwordResetContext.reset_id,
+          token: passwordResetContext.token,
+          password: resetPassword,
+          password_confirmation: resetPasswordConfirmation,
+        }),
+      });
+      const payload = await parseJsonResponse<PasswordResetResponse & ApiErrorPayload>(response);
+      if (!response.ok) {
+        throw new Error(getErrorMessage(payload, "No fue posible restablecer la contraseña."));
+      }
+
+      clearPasswordResetQuery();
+      setPasswordResetContext(null);
+      setResetPassword("");
+      setResetPasswordConfirmation("");
+      setPasswordResetMessage(payload?.message ?? "La contraseña fue actualizada correctamente.");
+      setLoginMessage(payload?.message ?? "La contraseña fue actualizada correctamente.");
+    } catch (resetError) {
+      setPasswordResetError(
+        resetError instanceof Error ? resetError.message : "Error al restablecer la contraseña.",
+      );
+    } finally {
+      setPasswordResetLoading(false);
+    }
+  };
+
+  const handleCancelPasswordReset = () => {
+    clearPasswordResetQuery();
+    setPasswordResetContext(null);
+    setResetPassword("");
+    setResetPasswordConfirmation("");
+    setPasswordResetError(null);
+    setPasswordResetMessage(null);
+  };
+
   const handleCreateUser = async (event: FormEvent) => {
     event.preventDefault();
     setAdminError(null);
@@ -947,6 +1094,8 @@ function App() {
       role: user.role,
       active: user.active,
       two_factor_enabled: user.two_factor_enabled,
+      password: "",
+      password_confirmation: "",
     });
   };
 
@@ -1189,7 +1338,47 @@ function App() {
             </div>
 
             <aside className="login-card login-card-floating">
-              {!pendingLogin ? (
+              {passwordResetContext ? (
+                <>
+                  <div className="login-card-header">
+                    <h2>Nueva contraseña</h2>
+                    <p>
+                      Define una nueva clave corporativa para tu cuenta. El enlace es temporal y solo sirve para esta
+                      solicitud.
+                    </p>
+                  </div>
+                  <form className="login-form" onSubmit={handlePasswordReset}>
+                    <label>
+                      <span>Nueva contraseña</span>
+                      <input
+                        type="password"
+                        value={resetPassword}
+                        onChange={(event) => setResetPassword(event.target.value)}
+                        placeholder="Mínimo 8 caracteres"
+                        autoComplete="new-password"
+                      />
+                    </label>
+                    <label>
+                      <span>Confirmar nueva contraseña</span>
+                      <input
+                        type="password"
+                        value={resetPasswordConfirmation}
+                        onChange={(event) => setResetPasswordConfirmation(event.target.value)}
+                        placeholder="Repite la nueva contraseña"
+                        autoComplete="new-password"
+                      />
+                    </label>
+                    <button className="login-button" disabled={passwordResetLoading} type="submit">
+                      {passwordResetLoading ? "Actualizando..." : "Restablecer contraseña"}
+                    </button>
+                  </form>
+                  <button className="secondary-button" onClick={handleCancelPasswordReset} type="button">
+                    Volver al inicio de sesión
+                  </button>
+                  {passwordResetMessage && <div className="success-box">{passwordResetMessage}</div>}
+                  {passwordResetError && <div className="error-box">{passwordResetError}</div>}
+                </>
+              ) : !pendingLogin ? (
                 <>
                   <div className="login-card-header">
                     <h2>Iniciar sesión</h2>
@@ -1233,8 +1422,12 @@ function App() {
                   </form>
 
                   <div className="login-card-links">
-                    <button className="login-text-link" type="button">
-                      ¿Has olvidado tu contraseña?
+                    <button
+                      className="login-text-link"
+                      onClick={() => void handleForgotPasswordRequest()}
+                      type="button"
+                    >
+                      {passwordResetLoading ? "Enviando enlace..." : "¿Has olvidado tu contraseña?"}
                     </button>
                     <button className="login-text-link" onClick={() => void handleActivationCodeRequest()} type="button">
                       Enviar codigo 2FA
@@ -2347,6 +2540,24 @@ function App() {
                       ))}
                     </select>
                   </label>
+                  <label>
+                    <span>{editingAdminUserId ? "Nueva contraseña" : "Contraseña inicial"}</span>
+                    <input
+                      type="password"
+                      placeholder={editingAdminUserId ? "Dejar vacío para mantener la actual" : "Mínimo 8 caracteres"}
+                      value={adminForm.password}
+                      onChange={(event) => handleAdminFormChange("password", event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>{editingAdminUserId ? "Confirmar nueva contraseña" : "Confirmar contraseña"}</span>
+                    <input
+                      type="password"
+                      placeholder="Repite la contraseña"
+                      value={adminForm.password_confirmation}
+                      onChange={(event) => handleAdminFormChange("password_confirmation", event.target.value)}
+                    />
+                  </label>
                 </div>
 
                 <div className="toggle-grid">
@@ -2412,6 +2623,11 @@ function App() {
 
               {adminMessage && <div className="success-box">{adminMessage}</div>}
               {adminError && <div className="error-box">{adminError}</div>}
+              <p className="muted">
+                {editingAdminUserId
+                  ? "Puedes cambiar la clave del usuario desde este formulario. Si dejas la contraseña vacía, se conserva la actual."
+                  : "Al registrar un usuario debes asignar una contraseña inicial segura. Luego podrá autenticarse con esa clave y el 2FA."}
+              </p>
 
               <div className="admin-table">
                 <div className="admin-table-header">
@@ -2434,6 +2650,8 @@ function App() {
                         <span className="admin-cell-label">Usuario</span>
                         <strong>{user.name}</strong>
                         <p>{user.email}</p>
+                        <p>{user.password_set ? "Contraseña configurada" : "Contraseña pendiente"}</p>
+                        <p>Clave actualizada: {formatDateTime(user.password_changed_at)}</p>
                         <p>Alta: {formatDateTime(user.created_at)} | Actualización: {formatDateTime(user.updated_at)}</p>
                       </div>
                       <div className="admin-row-meta">
